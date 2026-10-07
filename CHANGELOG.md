@@ -2,6 +2,24 @@
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.3.0] — 2026-10-07
+
+### Ajouté
+- **Mise à jour intégrée.** L'updater de BetterDiscord ignore `@updateUrl` et ne suit que les addons
+  de sa boutique : Sonar se met donc à jour lui-même depuis `github.com/bangix28/sonar`. Vérification
+  15 s après le démarrage puis toutes les 6 h ; la nouvelle version est écrite à la place de
+  `Sonar.plugin.js` et BetterDiscord la recharge. Réglage « Mises à jour automatiques » (activé par
+  défaut ; désactivé, un bandeau propose « Mettre à jour ») et bouton « Vérifier les mises à jour ».
+- **Sons téléchargés automatiquement.** Les sons du dossier `sounds/` du dépôt absents en local sont
+  téléchargés dans `plugins\sounds\`. Installer Sonar = copier le seul `Sonar.plugin.js`.
+- Version installée affichée dans les réglages et le Diagnostic.
+
+### Notes techniques
+- Le fichier distant est validé (en-tête, `@name Sonar`, `module.exports`, taille) et la version
+  comparée numériquement (`0.10.0 > 0.2.0`) ; une version illisible ne déclenche jamais d'écriture.
+- Un `Sonar.plugin.js` qui est un lien symbolique (`scripts/dev-link.ps1`) n'est jamais écrasé.
+  `lstatSync` du polyfill BD suit les liens : la détection compare `realpathSync` au chemin.
+
 ## [0.2.0] — 2026-10-07
 
 ### Ajouté

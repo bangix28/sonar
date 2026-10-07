@@ -44,9 +44,8 @@ Corollaire : **tout le monde doit installer le plugin**, émetteur comme destina
 
 ### 2. Déposer le plugin
 
-Télécharger **[Sonar.zip](https://github.com/bangix28/sonar/releases/latest/download/Sonar.zip)**
-(aucun compte GitHub nécessaire), le dézipper, puis copier `Sonar.plugin.js` **et** le dossier
-`sounds` dans :
+Télécharger **[Sonar.plugin.js](https://github.com/bangix28/sonar/releases/latest/download/Sonar.plugin.js)**
+(aucun compte GitHub nécessaire) et le copier dans :
 
 ```
 %AppData%\BetterDiscord\plugins
@@ -54,8 +53,9 @@ Télécharger **[Sonar.zip](https://github.com/bangix28/sonar/releases/latest/do
 
 Raccourci : coller `%AppData%\BetterDiscord\plugins` dans la barre d'adresse de l'Explorateur.
 
-Les sons de `plugins\sounds\` sont trouvés automatiquement (`meurs.ogg` → son « Meurs »). Les mises
-à jour du plugin sont ensuite proposées par BetterDiscord.
+C'est tout : au démarrage, Sonar télécharge ses sons dans `plugins\sounds\` et installe ses mises à
+jour tout seul depuis ce dépôt (désactivable, bouton « Vérifier les mises à jour » dans Général).
+L'updater de BetterDiscord, lui, ne connaît pas Sonar : il ne suit que les addons de sa boutique.
 
 Puis l'activer dans **Paramètres Discord → Plugins → Sonar**.
 
@@ -182,6 +182,12 @@ node tests\smoke.test.js      # charge le plugin contre de faux modules Discord
 ```
 
 Pas de build : le fichier source **est** le fichier distribué.
+
+**Publier une version** : augmenter `@version` dans `Sonar.plugin.js`, ajouter l'entrée au
+CHANGELOG, puis `git push` sur `main`. Les plugins installés la récupèrent d'eux-mêmes (au
+démarrage ou toutes les 6 h). Un son ajouté dans `sounds/` (nommé d'après un id du catalogue) est
+distribué de la même façon. Créer une release (`gh release create vX.Y.Z Sonar.plugin.js`) ne sert
+qu'au lien de première installation.
 
 `smoke.test.js` charge `Sonar.plugin.js` exactement comme BetterDiscord le fait (`new Function` avec
 `require`/`module` injectés) contre un faux dispatcher Flux, et vérifie le cycle de vie complet :

@@ -123,6 +123,30 @@ BdApi.ContextMenu = {
     patch(navId, cb) { patchedMenus.push({navId, cb}); return () => { patchedMenus.splice(patchedMenus.findIndex(p => p.cb === cb), 1); }; },
     buildItem: (item) => item
 };
+const pluginsDir = fs.mkdtempSync(path.join(os.tmpdir(), "sonar-plugins-"));
+BdApi.Plugins = {folder: pluginsDir};
+
+// Faux GitHub : plugin distant + listing du dossier sounds.
+const remote = {version: "9.9.9", fetched: []};
+const remotePlugin = () => `/**\n * @name Sonar\n * @version ${remote.version}\n */\nmodule.exports = class {};\n${"//".padEnd(12_000, "x")}\n`;
+const response = (body) => ({
+    ok: true, status: 200,
+    text: async () => body,
+    json: async () => JSON.parse(body),
+    arrayBuffer: async () => new TextEncoder().encode(body).buffer
+});
+BdApi.Net = {
+    fetch: async (url) => {
+        remote.fetched.push(url);
+        if (url.includes("Sonar.plugin.js")) return response(remotePlugin());
+        if (url.includes("/contents/sounds")) return response(JSON.stringify([
+            {type: "file", name: "meurs.ogg", size: 4, download_url: "https://x/meurs.ogg"},
+            {type: "file", name: "inconnu.ogg", size: 4, download_url: "https://x/inconnu.ogg"},
+            {type: "file", name: "README.md", size: 4, download_url: "https://x/README.md"}
+        ]));
+        return response("OggS");
+    }
+};
 globalThis.BdApi = BdApi;
 
 /* ------------------------- Chargement facon BetterDiscord ------------------ */
@@ -218,7 +242,7 @@ check("signal destine a autrui ignore", played.length === 0);
 console.log("-- Emission --");
 const sonarCmd = registeredCommands.find(c => c.name === "sonar");
 const res = sonarCmd.execute([{name: "ami", value: FRIEND}, {name: "son", value: "klaxon"}, {name: "message", value: "hop"}], {});
-Promise.resolve(res).then((r) => {
+Promise.resolve(res).then(async (r) => {
     check("message envoye dans le bon salon", sent[0]?.channelId === CHANNEL);
     check("4 champs requis presents", sent[0] && ["content", "tts", "invalidEmojis", "validNonShortcutEmojis"].every(k => k in sent[0].data));
     check("contenu au format protocole", /^\u{1F50A} SONAR\|1\|<@\d+>\|klaxon\|[0-9a-f]{8}\|hop$/u.test(sent[0]?.data.content ?? ""));
@@ -239,7 +263,7 @@ Promise.resolve(res).then((r) => {
     // qui ignore onChange et n'ecoute que onClick. Un bouton sans onClick est mort.
     const allSettings = panel.settings.flatMap(s => s.type === "category" ? s.settings : [s]);
     const buttons = allSettings.filter(s => s.type === "button");
-    check("des boutons sont declares", buttons.length === 13, `(${buttons.length})`);
+    check("des boutons sont declares", buttons.length === 14, `(${buttons.length})`);
     check("tout bouton a un onClick", buttons.every(b => typeof b.onClick === "function"),
           `(sans onClick: ${buttons.filter(b => typeof b.onClick !== "function").map(b => b.id).join(", ")})`);
 
@@ -285,6 +309,36 @@ Promise.resolve(res).then((r) => {
     check("aucun enableWith dans une categorie (bug BD 1.14.1)",
           allSettings.every(s => !("enableWith" in s)));
 
+    console.log("-- Mises a jour --");
+    const installed = path.join(pluginsDir, "Sonar.plugin.js");
+    await buttons.find(b => b.id === "checkUpdates").onClick();
+    check("bouton Verifier installe la version distante",
+          fs.existsSync(installed) && fs.readFileSync(installed, "utf8").includes("@version 9.9.9"));
+    check("toast de mise a jour", toasts.some(t => t.msg.includes("mis à jour en 9.9.9")));
+    check("cache GitHub contourne", remote.fetched.some(u => /Sonar\.plugin\.js\?t=\d+/.test(u)));
+
+    remote.version = "0.1.0";
+    await plugin.updater.checkPlugin({manual: true});
+    check("meme version : rien a faire", toasts.at(-1)?.msg.includes("à jour (0.1.0)"));
+
+    remote.version = "9.9.10";
+    panel.onChange("general", "autoUpdate", false);
+    fs.unlinkSync(installed);
+    await plugin.updater.checkPlugin();
+    check("auto desactive : rien d'installe sans clic", !fs.existsSync(installed));
+    panel.onChange("general", "autoUpdate", true);
+
+    const sounds = path.join(pluginsDir, "sounds");
+    check("son du catalogue telecharge", fs.existsSync(path.join(sounds, "meurs.ogg")));
+    check("fichiers hors catalogue ignores",
+          !fs.existsSync(path.join(sounds, "inconnu.ogg")) && !fs.existsSync(path.join(sounds, "README.md")));
+    const meursNote = plugin.getSettingsPanel().settings
+        .find(s => s.id === "sounds").settings.find(s => s.id === "file_meurs").note;
+    check("son telecharge trouve automatiquement", meursNote.includes("automatiquement"), `(${meursNote})`);
+    const downloads = remote.fetched.filter(u => u.endsWith("/meurs.ogg")).length;
+    await plugin.updater.syncSounds();
+    check("son deja present non retelecharge", remote.fetched.filter(u => u.endsWith("/meurs.ogg")).length === downloads);
+
     console.log("-- Arret --");
     plugin.stop();
     check("desabonne de MESSAGE_CREATE", (subs.MESSAGE_CREATE?.size ?? 0) === 0);
@@ -294,6 +348,7 @@ Promise.resolve(res).then((r) => {
     check("reglages persistes sur disque", !!saved.settings && saved.settings.channelId === CHANNEL);
 
     try { fs.unlinkSync(soundFile); } catch {}
+    try { fs.rmSync(pluginsDir, {recursive: true, force: true}); } catch {}
     console.log(`\n${pass} reussis, ${fail} echoues`);
     process.exit(fail ? 1 : 0);
 });

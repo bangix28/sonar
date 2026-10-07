@@ -85,5 +85,26 @@ check("plage nulle desactivee", isQuiet("08:00", "08:00", "08:00"), false);
 check("valeur invalide", isQuiet("abc", "07:00", "03:00"), false);
 check("heure hors bornes", parseHHMM("25:00"), null);
 
+// Copie de §12 compareVersions.
+function compareVersions(a, b) {
+    const parse = (v) => /^\d+\.\d+\.\d+$/.test(String(v ?? "").trim())
+        ? String(v).trim().split(".").map(Number)
+        : null;
+    const pa = parse(a), pb = parse(b);
+    if (!pa || !pb) return NaN;
+    for (let i = 0; i < 3; i++) {
+        if (pa.at(i) !== pb.at(i)) return pa.at(i) < pb.at(i) ? -1 : 1;
+    }
+    return 0;
+}
+
+console.log("-- Versions --");
+check("numerique, pas lexical", compareVersions("0.10.0", "0.2.0"), 1);
+check("plus ancienne", compareVersions("0.2.0", "0.3.0"), -1);
+check("egales", compareVersions("1.2.3", "1.2.3"), 0);
+check("patch", compareVersions("0.3.1", "0.3.0"), 1);
+check("invalide => NaN (jamais de MAJ)", Number.isNaN(compareVersions("abc", "0.3.0")), true);
+check("absente => NaN", Number.isNaN(compareVersions(undefined, "0.3.0")), true);
+
 console.log(`\n${pass} reussis, ${fail} echoues`);
 process.exit(fail ? 1 : 0);

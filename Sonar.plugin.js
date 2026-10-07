@@ -2,7 +2,7 @@
  * @name Sonar
  * @author kenol
  * @description Envoie une notification sonore ciblée à un ami, insensible à la sourdine et au Ne pas déranger.
- * @version 0.2.0
+ * @version 0.3.0
  * @source https://github.com/bangix28/sonar
  * @updateUrl https://raw.githubusercontent.com/bangix28/sonar/main/Sonar.plugin.js
  */
@@ -39,6 +39,11 @@ const SOUND_CATALOG = [
     {id: "merde", label: "Merde"},
     {id: "recommence", label: "Recommence"}
 ];
+
+const REPO = "bangix28/sonar";
+const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/main/`;
+const UPDATE_CHECK_DELAY_MS = 15_000;
+const UPDATE_INTERVAL_MS = 6 * 3600_000;
 
 /** Sous-dossiers du dossier plugins où les sons sont cherchés quand aucun fichier n'est choisi. */
 const DEFAULT_SOUNDS_DIRS = ["sonar-sounds", "sounds"];
@@ -91,6 +96,7 @@ const DEFAULTS = {
     replayOnReconnect: true,
 
     simSound: "ping",  // son choisi pour le bouton « Simuler une réception »
+    autoUpdate: true,
 
     stats: {received: 0, blocked: 0, sent: 0}
 };
@@ -854,6 +860,159 @@ class Sender {
 }
 
 /* ====================================================================== *
+ * §12 UPDATER — mise à jour du plugin et des sons depuis GitHub.
+ *     L'updater de BetterDiscord ignore @updateUrl : il ne suit que les
+ *     addons de sa boutique. Sonar se met donc à jour lui-même.
+ * ====================================================================== */
+
+/** Compare deux versions `x.y.z` numériquement. NaN si l'une est invalide. */
+function compareVersions(a, b) {
+    const parse = (v) => /^\d+\.\d+\.\d+$/.test(String(v ?? "").trim())
+        ? String(v).trim().split(".").map(Number)
+        : null;
+    const pa = parse(a), pb = parse(b);
+    if (!pa || !pb) return NaN;
+    for (let i = 0; i < 3; i++) {
+        if (pa.at(i) !== pb.at(i)) return pa.at(i) < pb.at(i) ? -1 : 1;
+    }
+    return 0;
+}
+
+class Updater {
+    #fs = null;
+    #path = null;
+
+    constructor({settings, currentVersion, onSoundsAdded}) {
+        this.settings = settings;
+        this.currentVersion = currentVersion;
+        this.onSoundsAdded = onSoundsAdded;
+    }
+
+    #node() {
+        if (!this.#fs) {
+            try {
+                this.#fs = require("fs");
+                this.#path = require("path");
+            } catch (err) {
+                BdApi.Logger.stacktrace("Sonar", "Polyfill fs/path indisponible", err);
+            }
+        }
+        return this.#fs && this.#path;
+    }
+
+    async #fetch(url) {
+        const res = await BdApi.Net.fetch(url, {headers: {"User-Agent": "Sonar-BetterDiscord"}, timeout: 15_000});
+        if (!res?.ok) throw new Error(`HTTP ${res?.status} sur ${url}`);
+        return res;
+    }
+
+    /** Plugin puis sons. `manual` = clic sur le bouton : on donne toujours un retour. */
+    async run({manual = false} = {}) {
+        await this.checkPlugin({manual});
+        await this.syncSounds({manual});
+    }
+
+    async checkPlugin({manual = false} = {}) {
+        try {
+            const text = await (await this.#fetch(`${RAW_BASE}Sonar.plugin.js?t=${Date.now()}`)).text();
+
+            const valid = text.startsWith("/**") && /@name\s+Sonar\b/.test(text)
+                && text.includes("module.exports") && text.length > 10_000 && text.length < 1_000_000;
+            if (!valid) throw new Error("fichier distant invalide");
+
+            const remote = /@version\s+(\S+)/.exec(text)?.[1];
+            if (!(compareVersions(remote, this.currentVersion) > 0)) {
+                if (manual) BdApi.UI.showToast(`Sonar est à jour (${this.currentVersion}).`, {type: "success"});
+                return;
+            }
+
+            if (!manual && !this.settings().autoUpdate) {
+                BdApi.UI.showNotice(`Sonar ${remote} est disponible.`, {
+                    type: "info",
+                    buttons: [{label: "Mettre à jour", onClick: () => this.#install(text, remote)}]
+                });
+                return;
+            }
+            this.#install(text, remote);
+        } catch (err) {
+            BdApi.Logger.warn("Sonar", `Vérification de mise à jour échouée : ${err?.message ?? err}`);
+            if (manual) BdApi.UI.showToast("Sonar : impossible de vérifier les mises à jour.", {type: "error"});
+        }
+    }
+
+    #install(text, version) {
+        if (!this.#node()) return;
+        const target = this.#path.join(BdApi.Plugins.folder, "Sonar.plugin.js");
+
+        // Lien symbolique (scripts/dev-link.ps1) : ne jamais écraser le dépôt de dev.
+        // lstatSync du polyfill BD suit les liens, d'où la comparaison des chemins réels.
+        let real = target;
+        try {
+            real = this.#fs.realpathSync(target);
+        } catch { /* fichier absent : on l'écrit */ }
+        const norm = (p) => String(p).replace(/\\/g, "/").toLowerCase();
+        if (norm(real) !== norm(target)) {
+            BdApi.UI.showToast(`Sonar ${version} disponible (mode dev : non installée).`, {type: "info"});
+            return;
+        }
+
+        try {
+            this.#fs.writeFileSync(target, text, "utf8");
+            // BetterDiscord surveille le dossier plugins et recharge le plugin tout seul.
+            BdApi.UI.showToast(`Sonar mis à jour en ${version}.`, {type: "success"});
+        } catch (err) {
+            BdApi.Logger.stacktrace("Sonar", "Écriture de la mise à jour échouée", err);
+            BdApi.UI.showToast("Sonar : mise à jour échouée.", {type: "error"});
+        }
+    }
+
+    /** Télécharge dans plugins\sounds les sons du dépôt absents (ou de taille différente) en local. */
+    async syncSounds({manual = false} = {}) {
+        if (!this.#node()) return;
+        try {
+            const listing = await (await this.#fetch(`https://api.github.com/repos/${REPO}/contents/sounds`)).json();
+            const ids = new Set(SOUND_CATALOG.map((s) => s.id));
+            const dir = this.#path.join(BdApi.Plugins.folder, DEFAULT_SOUNDS_DIRS.at(1));
+
+            const wanted = (Array.isArray(listing) ? listing : []).filter((f) => {
+                const ext = this.#path.extname(f?.name ?? "").toLowerCase();
+                return f?.type === "file" && f.download_url && ext in MIME_BY_EXT
+                    && ids.has(this.#path.basename(f.name, ext));
+            });
+
+            let added = 0;
+            for (const file of wanted) {
+                const local = this.#path.join(dir, file.name);
+                let size = -1;
+                try {
+                    size = this.#fs.statSync(local).size;
+                } catch { /* absent */ }
+                if (size === file.size) continue;
+
+                const bytes = new Uint8Array(await (await this.#fetch(file.download_url)).arrayBuffer());
+                let bin = "";
+                for (let i = 0; i < bytes.length; i += 0x8000) {
+                    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+                }
+                this.#fs.mkdirSync(dir, {recursive: true});
+                this.#fs.writeFileSync(local, btoa(bin), "base64");
+                added++;
+            }
+
+            if (added) {
+                this.onSoundsAdded?.();
+                BdApi.UI.showToast(`Sonar : ${added} son(s) ajouté(s).`, {type: "success"});
+            } else if (manual) {
+                BdApi.UI.showToast("Sonar : sons à jour.", {type: "info"});
+            }
+        } catch (err) {
+            BdApi.Logger.warn("Sonar", `Synchronisation des sons échouée : ${err?.message ?? err}`);
+            if (manual) BdApi.UI.showToast("Sonar : impossible de télécharger les sons.", {type: "error"});
+        }
+    }
+}
+
+/* ====================================================================== *
  * §10 / §11  CLASSE EXPORTÉE — lifecycle, câblage, UI.
  * ====================================================================== */
 
@@ -862,6 +1021,8 @@ module.exports = class Sonar {
     #unregisterCommands = [];
     #unpatchMenus = [];
     #abort = null;
+    #updateTimeout = null;
+    #updateInterval = null;
 
     constructor(meta) {
         this.meta = meta;
@@ -876,6 +1037,11 @@ module.exports = class Sonar {
         this.guards = new Guards(settings);
         this.sender = new Sender(settings);
         this.receiver = new Receiver({settings, onSignal: (e) => this.onSignal(e)});
+        this.updater = new Updater({
+            settings,
+            currentVersion: meta.version,
+            onSoundsAdded: () => this.bank.preload(Object.fromEntries(SOUND_CATALOG.map((s) => [s.id, this.#soundPath(s.id)])))
+        });
     }
 
     get settings() {
@@ -898,10 +1064,17 @@ module.exports = class Sonar {
 
         this.#registerCommands();
         this.#patchContextMenus();
+
+        // Différé : ne pas ralentir le démarrage de Discord.
+        this.#updateTimeout = setTimeout(() => this.updater.run(), UPDATE_CHECK_DELAY_MS);
+        this.#updateInterval = setInterval(() => this.updater.run(), UPDATE_INTERVAL_MS);
     }
 
     stop() {
         this.#started = false;
+
+        clearTimeout(this.#updateTimeout);
+        clearInterval(this.#updateInterval);
 
         this.#abort?.abort();
         this.#abort = null;
@@ -1092,7 +1265,7 @@ module.exports = class Sonar {
             .map(([label, ok]) => `${ok ? "✅" : "❌"}  ${label}`);
 
         const s = this.settings;
-        lines.push("", "— Configuration —");
+        lines.push("", "— Configuration —", `ℹ️  Version : ${this.meta.version}`);
 
         if (!s.channelId) {
             lines.push("❌  Aucun salon Sonar configuré");
@@ -1283,6 +1456,21 @@ module.exports = class Sonar {
                         note: "Joue le son et l'alerte comme si un ami t'envoyait un Sonar. Rien n'est envoyé, cooldowns et allowlist ignorés.",
                         children: "Simuler",
                         onClick: () => this.#simulateReception()
+                    },
+                    {
+                        type: "switch",
+                        id: "autoUpdate",
+                        name: "Mises à jour automatiques",
+                        note: "Installe les nouvelles versions et les nouveaux sons depuis GitHub au démarrage de Discord.",
+                        value: s.autoUpdate
+                    },
+                    {
+                        type: "button",
+                        id: "checkUpdates",
+                        name: "Vérifier les mises à jour",
+                        note: `Version installée : ${this.meta.version}`,
+                        children: "Vérifier",
+                        onClick: () => this.updater.run({manual: true})
                     }
                 ]
             },
