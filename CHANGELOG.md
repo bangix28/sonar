@@ -2,6 +2,14 @@
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.3.2] — 2026-10-07
+
+### Ajouté
+- **« Envoyer un Sonar » depuis un salon vocal.** Le menu contextuel est maintenant ajouté à tous les
+  menus dont le `navId` contient `user` (participant d'un salon vocal, profil…), et plus seulement à
+  `user-context`. Les menus qui ne fournissent qu'un `userId` sont gérés, et l'entrée n'apparaît
+  qu'une fois si deux menus imbriqués correspondent.
+
 ## [0.3.1] — 2026-10-07
 
 ### Corrigé

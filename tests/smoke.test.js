@@ -70,7 +70,7 @@ const messageActions = {
 };
 
 const stores = {
-    UserStore: {getCurrentUser: () => ({id: ME, username: "kenol"}), _dispatcher: dispatcher},
+    UserStore: {getCurrentUser: () => ({id: ME, username: "kenol"}), getUser: (id) => ({id}), _dispatcher: dispatcher},
     ChannelStore: {getChannel: (id) => (id === CHANNEL ? {id, name: "sonar"} : null)},
     MessageStore: {getMessages: () => ({toArray: () => []})},
     SelectedChannelStore: {getChannelId: () => CHANNEL},
@@ -176,10 +176,12 @@ plugin.start(); // idempotence
 check("start() idempotent (pas de double abonnement)", subs.MESSAGE_CREATE.size === 1);
 
 console.log("-- Configuration --");
-const userMenu = patchedMenus.find(p => p.navId === "user-context");
-const openUserMenu = (user, children = []) => {
+const userMenu = patchedMenus.find(p => p.navId instanceof RegExp);
+check("menu utilisateur cible tous les navId 'user' (salon vocal, profil...)",
+      ["user-context", "user-profile-actions"].every(n => userMenu?.navId.test(n)) && !userMenu.navId.test("channel-context"));
+const openUserMenu = (user, children = [], extra = {}) => {
     const rv = {props: {children}};
-    userMenu.cb(rv, {user});
+    userMenu.cb(rv, {user, ...extra});
     return rv.props.children;
 };
 check("clic droit sans salon : entree visible et explicite",
@@ -197,6 +199,10 @@ check("clic droit sur un ami : sous-menu Envoyer un Sonar",
 check("clic droit : menu en element unique gere", openUserMenu({id: FRIEND}, {type: "group"}).length === 3);
 check("clic droit sur soi-meme : rien", openUserMenu({id: ME}).length === 0);
 check("clic droit sur un bot : rien", openUserMenu({id: FRIEND, bot: true}).length === 0);
+check("menu avec seulement userId (ex. salon vocal)",
+      openUserMenu(undefined, [], {userId: FRIEND}).some(i => i.id === "sonar-send"));
+const nested = openUserMenu({id: FRIEND});
+check("menus imbriques : une seule entree", openUserMenu({id: FRIEND}, nested).length === nested.length);
 
 // Fichier son reel pour exercer SoundBank
 const soundFile = path.join(os.tmpdir(), "sonar-test.wav");

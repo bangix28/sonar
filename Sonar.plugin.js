@@ -2,7 +2,7 @@
  * @name Sonar
  * @author kenol
  * @description Envoie une notification sonore ciblée à un ami, insensible à la sourdine et au Ne pas déranger.
- * @version 0.3.1
+ * @version 0.3.2
  * @source https://github.com/bangix28/sonar
  * @updateUrl https://raw.githubusercontent.com/bangix28/sonar/main/Sonar.plugin.js
  */
@@ -74,6 +74,14 @@ function appendToMenu(returnValue, ...items) {
     if (!props) return;
     if (Array.isArray(props.children)) props.children.push(...items);
     else props.children = [props.children, ...items].filter(Boolean);
+}
+
+/** Vrai si une entrée d'id `id` est déjà dans le menu (recherche bornée en profondeur). */
+function menuHas(node, id, depth = 0) {
+    if (!node || depth > 4) return false;
+    if (Array.isArray(node)) return node.some((child) => menuHas(child, id, depth + 1));
+    if (node.props?.id === id || node.id === id) return true;
+    return menuHas(node.props?.children, id, depth + 1);
 }
 
 /** Buffer WAV silencieux, sert à « armer » le contexte audio après un refus d'autoplay. */
@@ -1231,9 +1239,12 @@ module.exports = class Sonar {
     #patchContextMenus() {
         if (typeof BdApi.ContextMenu?.patch !== "function") return;
 
-        this.#unpatchMenus.push(BdApi.ContextMenu.patch("user-context", (returnValue, props) => {
-            const user = props?.user;
-            if (!user || user.bot || user.id === Modules.currentUserId) return;
+        // Motif plutôt que "user-context" seul : le menu d'un participant de salon vocal,
+        // du profil, etc. portent d'autres navId selon l'endroit et les versions de Discord.
+        this.#unpatchMenus.push(BdApi.ContextMenu.patch(/user/i, (returnValue, props) => {
+            const user = props?.user ?? (props?.userId ? Modules.userStore?.getUser?.(props.userId) : null);
+            if (!user?.id || user.bot || user.id === Modules.currentUserId) return;
+            if (menuHas(returnValue, "sonar-send")) return; // menus imbriqués : une seule entrée
 
             // Toujours visible : une entrée qui disparaît sans salon configuré passe pour un bug.
             const item = this.settings.channelId
