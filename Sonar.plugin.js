@@ -2,7 +2,7 @@
  * @name Sonar
  * @author kenol
  * @description Envoie une notification sonore ciblée à un ami, insensible à la sourdine et au Ne pas déranger.
- * @version 0.3.4
+ * @version 0.3.5
  * @source https://github.com/bangix28/sonar
  * @updateUrl https://raw.githubusercontent.com/bangix28/sonar/main/Sonar.plugin.js
  */
@@ -1061,6 +1061,126 @@ class Updater {
 }
 
 /* ====================================================================== *
+ * §13 MENU INJECTOR — repli DOM pour les menus que BdApi.ContextMenu rate.
+ *     Constaté : le menu d'un participant de salon vocal (#user-context)
+ *     est rendu trop profond pour le patcher de BetterDiscord, qui n'y
+ *     exécute jamais aucun patch. On observe le DOM, on retrouve
+ *     l'utilisateur dans la fibre React, et on clone des entrées existantes.
+ * ====================================================================== */
+
+/** Utilisateur visé, en remontant la fibre React depuis l'élément du menu. */
+function fiberUserId(element) {
+    const key = element && Object.keys(element).find((k) => k.startsWith("__reactFiber"));
+    let fiber = key ? element[key] : null;
+    for (let depth = 0; fiber && depth < 80; depth++, fiber = fiber.return) {
+        const props = fiber.memoizedProps;
+        const id = props?.user?.id ?? props?.userId;
+        if (/^\d{15,25}$/.test(String(id))) return String(id);
+    }
+    return null;
+}
+
+const DOM_ITEM_ID = "sonar-dom-send";
+const DOM_STYLE_ID = "sonar-menu";
+const DOM_CSS = `
+[data-sonar-item] { cursor: pointer; }
+[data-sonar-item]:hover { background-color: var(--brand-500, #5865f2) !important; color: #fff !important; }
+[data-sonar-item]:hover * { color: #fff !important; }
+`;
+
+class MenuInjector {
+    #observer = null;
+
+    constructor({canSend, onSend}) {
+        this.canSend = canSend;
+        this.onSend = onSend;
+    }
+
+    start() {
+        if (this.#observer || typeof MutationObserver !== "function") return;
+        BdApi.DOM?.addStyle?.(DOM_STYLE_ID, DOM_CSS);
+        this.#observer = new MutationObserver(() => this.#scan());
+        this.#observer.observe(document.body, {childList: true, subtree: true});
+    }
+
+    stop() {
+        this.#observer?.disconnect();
+        this.#observer = null;
+        BdApi.DOM?.removeStyle?.(DOM_STYLE_ID);
+    }
+
+    #scan() {
+        // Appelé à chaque mutation du DOM : un seul sélecteur, rien d'autre tant qu'aucun menu n'est ouvert.
+        for (const menu of document.querySelectorAll('[role="menu"][id*="user"]:not([data-sonar])')) {
+            // Le patch BdApi.ContextMenu a fonctionné : son entrée a l'id DOM `${navId}-sonar-send`.
+            if (menu.querySelector('[id$="-sonar-send"]')) continue;
+            menu.dataset.sonar = "1";
+            try {
+                this.#inject(menu);
+            } catch (err) {
+                BdApi.Logger.stacktrace("Sonar", "Injection DOM du menu échouée", err);
+            }
+        }
+    }
+
+    #inject(menu) {
+        const userId = fiberUserId(menu);
+        if (!userId || userId === Modules.currentUserId) return;
+
+        // Modèle : une entrée simple (sans sous-menu, case ni sous-texte), pour copier le style.
+        const template = [...menu.querySelectorAll('[role="menuitem"]')]
+            .find((el) => !el.getAttribute("aria-haspopup") && el.children.length > 0
+                && !el.querySelector('input, [role="slider"], [role="checkbox"]')
+                && el.innerText.trim().split("\n").length === 1);
+        const lastGroup = [...menu.querySelectorAll('[role="group"]')].at(-1);
+        if (!template || !lastGroup) return;
+
+        const separator = menu.querySelector('[role="separator"]')?.cloneNode(true);
+        const group = lastGroup.cloneNode(false);
+
+        const makeItem = (id, label, onClick) => {
+            const item = template.cloneNode(true);
+            item.id = id;
+            item.removeAttribute("aria-disabled");
+            item.dataset.sonarItem = "1";
+            const labelEl = [...item.querySelectorAll("*")].find((el) => el.children.length === 0 && el.textContent.trim())
+                ?? item;
+            labelEl.textContent = label;
+            item.sonarLabel = labelEl;
+            item.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onClick();
+            });
+            return item;
+        };
+
+        const ready = this.canSend();
+        const head = makeItem(DOM_ITEM_ID, ready ? "Envoyer un Sonar ›" : "Envoyer un Sonar (salon à configurer)", () => {
+            if (!ready) {
+                BdApi.UI.showToast("Sonar : clic droit sur un salon → « Définir comme salon Sonar » d'abord.", {type: "warning"});
+                return;
+            }
+            // Dépliage en place : la liste des sons apparaît sous l'entrée.
+            if (group.querySelector("[data-sonar-sound]")) return;
+            head.sonarLabel.textContent = "Envoyer un Sonar ⌄";
+            for (const sound of SOUND_CATALOG) {
+                const item = makeItem(`${DOM_ITEM_ID}-${sound.id}`, `   🔊 ${sound.label}`, () => {
+                    BdApi.ContextMenu?.close?.();
+                    this.onSend(userId, sound.id);
+                });
+                item.dataset.sonarSound = sound.id;
+                group.appendChild(item);
+            }
+        });
+
+        group.appendChild(head);
+        if (separator) lastGroup.after(separator);
+        (separator ?? lastGroup).after(group);
+    }
+}
+
+/* ====================================================================== *
  * §10 / §11  CLASSE EXPORTÉE — lifecycle, câblage, UI.
  * ====================================================================== */
 
@@ -1090,6 +1210,10 @@ module.exports = class Sonar {
             currentVersion: meta.version,
             onSoundsAdded: () => this.bank.preload(Object.fromEntries(SOUND_CATALOG.map((s) => [s.id, this.#soundPath(s.id)])))
         });
+        this.menuInjector = new MenuInjector({
+            canSend: () => !!this.settings.channelId,
+            onSend: (userId, soundId) => this.#send(userId, soundId, "")
+        });
     }
 
     get settings() {
@@ -1112,6 +1236,7 @@ module.exports = class Sonar {
 
         this.#registerCommands();
         this.#patchContextMenus();
+        this.menuInjector.start();
 
         // Différé : ne pas ralentir le démarrage de Discord.
         this.#updateTimeout = setTimeout(() => this.updater.run(), UPDATE_CHECK_DELAY_MS);
@@ -1123,6 +1248,7 @@ module.exports = class Sonar {
 
         clearTimeout(this.#updateTimeout);
         clearInterval(this.#updateInterval);
+        this.menuInjector.stop();
 
         this.#abort?.abort();
         this.#abort = null;

@@ -2,6 +2,16 @@
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.3.5] — 2026-10-07
+
+### Corrigé
+- **« Envoyer un Sonar » dans le menu d'un participant de salon vocal.** Constaté en console : ce
+  menu (`#user-context`) est rendu trop profond pour le patcher de BetterDiscord, qui n'y exécute
+  aucun patch. Nouveau repli DOM (§13 `MenuInjector`) : un `MutationObserver` repère les menus
+  utilisateur, retrouve l'utilisateur en remontant la fibre React, et ajoute « Envoyer un Sonar ›
+  » en clonant une entrée existante ; un clic déplie la liste des sons. Ignoré si le patch
+  `BdApi.ContextMenu` a déjà ajouté son entrée.
+
 ## [0.3.4] — 2026-10-07
 
 ### Corrigé
