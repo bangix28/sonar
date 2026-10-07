@@ -1,0 +1,73 @@
+# Changelog
+
+Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
+
+## [0.2.0] — 2026-10-07
+
+### Ajouté
+- **Sons trouvés automatiquement.** Quand aucun fichier n'est choisi pour un son, le plugin cherche
+  `<son>.<ext>` (`meurs.ogg`, `le-tue.mp3`…) dans `plugins\sounds\` puis `plugins\sonar-sounds\`.
+  Distribuer le plugin revient à copier `Sonar.plugin.js` et le dossier `sounds` dans le dossier
+  plugins, sans « Parcourir » chez chaque destinataire. Un fichier choisi à la main reste prioritaire.
+- La note de chaque son indique « Trouvé automatiquement : … », et le Diagnostic compte ces sons.
+
+### Modifié
+- Le message « aucun fichier pour ce son » de « Écouter » et « Simuler » indique où déposer le fichier.
+
+## [0.1.1] — 2026-10-05
+
+Corrections trouvées au premier test réel dans Discord, en inspectant le code de
+`betterdiscord.asar` effectivement exécuté.
+
+### Corrigé
+- **Tous les boutons du panneau de réglages étaient inertes.** Pour un réglage `type: "button"`,
+  BetterDiscord rend son composant Button et lui injecte `onChange` — que le Button ignore, car il
+  n'écoute que `onClick`. « Diagnostic », « Importer mes amis » et les cinq boutons « Écouter » ne
+  faisaient donc rien. Les boutons sont désormais câblés via `onClick`, et une assertion de
+  régression vérifie que tout bouton déclaré en a un.
+- **Aucun retour après le choix d'un fichier son.** Le composant `file` de BetterDiscord n'affiche
+  jamais le chemin sélectionné : rien n'indiquait si le son avait été pris en compte. Un toast
+  confirme maintenant le fichier retenu (ou signale qu'il est illisible), et la note du réglage
+  rappelle le fichier courant à la réouverture des réglages.
+- **`enableWith` retiré des heures calmes.** Dans une catégorie, BetterDiscord 1.14.1 applique
+  `disabled = valeur` au lieu de `disabled = !valeur` — la branche racine, elle, négocie
+  correctement. Activer « Heures calmes » aurait grisé les champs début/fin. Le plugin ne s'appuie
+  pas sur ce comportement inversé.
+
+## [0.1.0] — 2026-10-05
+
+Première version.
+
+### Ajouté
+- Réception des signaux via le flux `MESSAGE_CREATE`, insensible à la sourdine du salon et du serveur
+  ainsi qu'au statut Ne pas déranger.
+- Lecture de sons depuis des fichiers locaux (`.ogg`, `.mp3`, `.wav`, `.m4a`, `.flac`, `.opus`), avec
+  cache invalidé au `mtime` du fichier.
+- Commande slash `/sonar` (destinataire, son, message) et `/sonar-ici` pour définir le salon courant.
+- Menu contextuel « Envoyer un Sonar » sur un utilisateur, et « Définir comme salon Sonar » sur un salon.
+- Alerte visuelle sur trois canaux indépendants : notification BetterDiscord, notification Windows
+  native, clignotement de la barre des tâches.
+- Garde-fous : allowlist (vide par défaut), cooldown par émetteur et cooldown global avec plancher
+  non désactivable de 5 s, heures calmes gérant le passage par minuit, respect du mode Streamer,
+  interrupteur global.
+- Volume général, volume par son, plafond de protection auditive, suivi du volume de sortie Discord,
+  et politique de superposition des sons (couper / file d'attente / superposer).
+- Bouton **Diagnostic** : état de chaque module interne, du salon et des fichiers son.
+- Rattrapage best-effort des signaux de moins de 5 minutes à la reconnexion.
+- Protocole de signal versionné, documenté dans `docs/PROTOCOL.md`.
+
+### Notes techniques
+- Toute la résolution de modules Discord est confinée à la section `§1 Modules`, avec cascades de
+  repli sur le dispatcher (3 voies) et sur le module d'envoi (2 voies).
+- `new Audio("file:///…")` ne fonctionne pas sous Chromium ; la lecture passe par
+  `fs.readFileSync(path, "base64")` → `Blob` → `URL.createObjectURL`.
+- Le polyfill `fs` de BetterDiscord utilise `"utf-8"` comme encodage par défaut, pas `null` :
+  l'encodage est toujours passé explicitement.
+
+### Limites connues
+- Ne réveille que les clients Discord allumés : Discord ne rejoue jamais les `MESSAGE_CREATE` manqués.
+- Desktop uniquement (BetterDiscord ne couvre ni le mobile ni Discord Web).
+- Le son sort du process Discord et subit donc son curseur dans le mixeur de volume de Windows.
+- `DiscordNative.window.flashFrame` n'est pas documenté publiquement : le clignotement de la barre
+  des tâches tente la voie native puis un module webpack, et retombe sur un clignotement du titre de
+  fenêtre qui fonctionne partout.

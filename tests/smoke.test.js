@@ -1,0 +1,299 @@
+/**
+ * Banc d'essai : charge Sonar.plugin.js comme le fait BetterDiscord
+ * (new Function avec require/module/exports injectes) contre de faux
+ * modules Discord, et valide le cablage de bout en bout.
+ */
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+
+const PLUGIN = path.join(__dirname, "..", "Sonar.plugin.js");
+
+let pass = 0, fail = 0;
+const check = (label, cond, extra = "") => {
+    if (cond) { pass++; console.log(`  ok   ${label}`); }
+    else { fail++; console.log(`  ECHEC ${label} ${extra}`); }
+};
+
+/* ---------------------- Faux environnement navigateur ---------------------- */
+
+const played = [];
+globalThis.Audio = class {
+    constructor(src) { this.src = src; this.volume = 1; }
+    play() { played.push({src: this.src, volume: this.volume}); return Promise.resolve(); }
+    pause() {}
+};
+globalThis.URL.createObjectURL = (blob) => `blob:fake/${blob.size}`;
+globalThis.URL.revokeObjectURL = () => {};
+
+const listeners = {};
+globalThis.document = {
+    title: "Discord",
+    addEventListener: (t, fn) => { (listeners[t] ??= []).push(fn); },
+    removeEventListener: () => {}
+};
+const notifications = [];
+globalThis.Notification = class {
+    constructor(title, opts) { notifications.push({title, ...opts}); }
+    close() {}
+};
+globalThis.Notification.permission = "granted";
+
+let flashed = 0;
+globalThis.window = {
+    DiscordNative: {window: {flashFrame: () => { flashed++; }}},
+    Notification: globalThis.Notification,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    focus: () => {}
+};
+
+/* --------------------------- Faux modules Discord -------------------------- */
+
+const ME = "111111111111111111";
+const FRIEND = "287654321098765432";
+const CHANNEL = "999999999999999999";
+
+const subs = {};
+const dispatcher = {
+    dispatch() {}, register() {},
+    subscribe(ev, fn) { (subs[ev] ??= new Set()).add(fn); },
+    unsubscribe(ev, fn) { subs[ev]?.delete(fn); },
+    emit(ev, payload) { for (const fn of subs[ev] ?? []) fn(payload); }
+};
+
+const sent = [];
+const messageActions = {
+    editMessage() {},
+    sendMessage(channelId, data, wait, options) { sent.push({channelId, data, options}); return Promise.resolve(); },
+    fetchMessages() { return Promise.resolve(); }
+};
+
+const stores = {
+    UserStore: {getCurrentUser: () => ({id: ME, username: "kenol"}), _dispatcher: dispatcher},
+    ChannelStore: {getChannel: (id) => (id === CHANNEL ? {id, name: "sonar"} : null)},
+    MessageStore: {getMessages: () => ({toArray: () => []})},
+    SelectedChannelStore: {getChannelId: () => CHANNEL},
+    RelationshipStore: {getFriendIDs: () => [FRIEND]},
+    StreamerModeStore: {enabled: false, disableSounds: false},
+    MediaEngineStore: {getOutputVolume: () => 100}
+};
+
+/* --------------------------------- BdApi ---------------------------------- */
+
+const saved = {};
+const toasts = [], alerts = [];
+const registeredCommands = [], patchedMenus = [];
+
+function BdApiCtor(name) { this.pluginName = name; }
+BdApiCtor.prototype.Data = {
+    save: (k, v) => { saved[k] = v; },
+    load: (k) => saved[k]
+};
+BdApiCtor.prototype.Commands = {
+    register(cmd) { registeredCommands.push(cmd); return () => { registeredCommands.splice(registeredCommands.indexOf(cmd), 1); }; }
+};
+
+const BdApi = BdApiCtor;
+BdApi.Logger = {warn: () => {}, info: () => {}, stacktrace: (...a) => { console.log("  [stacktrace]", a[1], a[2]?.message ?? ""); }};
+BdApi.UI = {
+    showToast: (msg, o) => toasts.push({msg, ...o}),
+    showNotice: () => () => {},
+    showNotification: () => true,
+    alert: (title, body) => alerts.push({title, body}),
+    buildSettingsPanel: (props) => ({__panel: true, ...props})
+};
+BdApi.Webpack = {
+    Filters: {byKeys: (...k) => k},
+    getStore: (n) => stores[n] ?? null,
+    getByKeys: (...args) => {
+        const keys = args.filter(a => typeof a === "string");
+        if (keys.includes("subscribe") && keys.includes("dispatch")) return dispatcher;
+        if (keys.includes("sendMessage")) return messageActions;
+        if (keys.includes("setBadge")) return {setBadge() {}};
+        return null;
+    },
+    waitForModule: () => Promise.resolve(dispatcher)
+};
+BdApi.Commands = {
+    Types: {OptionTypes: {STRING: 3, USER: 6}},
+    register: BdApiCtor.prototype.Commands.register
+};
+BdApi.ContextMenu = {
+    patch(navId, cb) { patchedMenus.push({navId, cb}); return () => { patchedMenus.splice(patchedMenus.findIndex(p => p.cb === cb), 1); }; },
+    buildItem: (item) => item
+};
+globalThis.BdApi = BdApi;
+
+/* ------------------------- Chargement facon BetterDiscord ------------------ */
+
+console.log("-- Chargement --");
+const source = fs.readFileSync(PLUGIN, "utf8");
+const mod = {filename: PLUGIN, exports: {}};
+new Function("require", "module", "exports", "__filename", "__dirname", source)(
+    require, mod, mod.exports, PLUGIN, path.dirname(PLUGIN)
+);
+const Sonar = mod.exports;
+check("export est une fonction/classe", typeof Sonar === "function");
+
+const plugin = new Sonar({name: "Sonar", version: "0.1.0"});
+check("instanciation sans erreur", !!plugin);
+check("start/stop presents", typeof plugin.start === "function" && typeof plugin.stop === "function");
+
+console.log("-- Demarrage --");
+plugin.start();
+check("abonne a MESSAGE_CREATE", subs.MESSAGE_CREATE?.size === 1);
+check("abonne a CONNECTION_OPEN", subs.CONNECTION_OPEN?.size === 1);
+check("commandes enregistrees (/sonar, /sonar-ici)", registeredCommands.length === 2,
+      `(${registeredCommands.map(c => c.name).join(", ")})`);
+check("menus contextuels patches", patchedMenus.length === 2);
+
+plugin.start(); // idempotence
+check("start() idempotent (pas de double abonnement)", subs.MESSAGE_CREATE.size === 1);
+
+console.log("-- Configuration --");
+const setChannel = registeredCommands.find(c => c.name === "sonar-ici");
+setChannel.execute([], {});
+check("/sonar-ici definit le salon", plugin.settings.channelId === CHANNEL);
+check("/sonar masquee sans salon devient visible", registeredCommands.find(c => c.name === "sonar").predicate() === true);
+
+// Fichier son reel pour exercer SoundBank
+const soundFile = path.join(os.tmpdir(), "sonar-test.wav");
+fs.writeFileSync(soundFile, Buffer.from("RIFF$\0\0\0WAVEfmt ", "binary"));
+plugin.settings.sounds.alarme = soundFile;
+plugin.settings.allowlist = [FRIEND];
+
+console.log("-- Reception d'un signal --");
+let nonceSeq = 0;
+const sig = (nonce) => `\u{1F50A} SONAR|1|<@${ME}>|alarme|${nonce}|Reveille-toi`;
+const signal = sig("7f3a9c21");
+// Chaque emit() utilise un nonce distinct : sinon la deduplication ecarte le
+// signal avant les garde-fous, et on ne testerait pas ce qu'on croit tester.
+const emit = (overrides = {}) => dispatcher.emit("MESSAGE_CREATE", {
+    channelId: CHANNEL,
+    message: {
+        id: "m" + (++nonceSeq),
+        content: sig(String(nonceSeq).padStart(8, "a")),
+        author: {id: FRIEND, username: "Alice"}
+    },
+    ...overrides
+});
+
+emit();
+check("son joue", played.length === 1, `(${played.length})`);
+check("volume plafonne a 0.8 par defaut", played[0]?.volume === 0.8, `(${played[0]?.volume})`);
+check("notification Windows emise", notifications.length === 1);
+check("notification silencieuse (silent:true)", notifications[0]?.silent === true);
+check("barre des taches clignote", flashed === 1);
+check("compteur de recus incremente", plugin.settings.stats.received === 1);
+
+console.log("-- Garde-fous --");
+const before = played.length;
+emit();
+check("cooldown bloque le 2e signal immediat", played.length === before);
+check("compteur de bloques incremente", plugin.settings.stats.blocked === 1);
+
+// Un doublon est ecarte AVANT les garde-fous : le compteur ne doit pas bouger.
+const blockedBefore = plugin.settings.stats.blocked;
+dispatcher.emit("MESSAGE_CREATE", {channelId: CHANNEL, message: {id: "m1", content: sig("aaaaaaa1"), author: {id: FRIEND}}});
+check("doublon ecarte avant les garde-fous", plugin.settings.stats.blocked === blockedBefore);
+
+played.length = 0;
+dispatcher.emit("MESSAGE_CREATE", {channelId: CHANNEL, message: {id: "x1", content: signal, author: {id: ME}}});
+check("auto-ping ignore (auteur = moi)", played.length === 0);
+
+dispatcher.emit("MESSAGE_CREATE", {channelId: "autre", message: {id: "x2", content: signal, author: {id: FRIEND}}});
+check("autre salon ignore", played.length === 0);
+
+dispatcher.emit("MESSAGE_CREATE", {channelId: CHANNEL, message: {id: "x3", content: "salut", author: {id: FRIEND}}});
+check("message normal ignore", played.length === 0);
+
+dispatcher.emit("MESSAGE_CREATE", {optimistic: true, channelId: CHANNEL, message: {id: "x4", content: signal, author: {id: FRIEND}}});
+check("message optimiste ignore", played.length === 0);
+
+const otherTarget = `\u{1F50A} SONAR|1|<@555555555555555555>|alarme|aaaaaaaa`;
+dispatcher.emit("MESSAGE_CREATE", {channelId: CHANNEL, message: {id: "x5", content: otherTarget, author: {id: FRIEND}}});
+check("signal destine a autrui ignore", played.length === 0);
+
+console.log("-- Emission --");
+const sonarCmd = registeredCommands.find(c => c.name === "sonar");
+const res = sonarCmd.execute([{name: "ami", value: FRIEND}, {name: "son", value: "klaxon"}, {name: "message", value: "hop"}], {});
+Promise.resolve(res).then((r) => {
+    check("message envoye dans le bon salon", sent[0]?.channelId === CHANNEL);
+    check("4 champs requis presents", sent[0] && ["content", "tts", "invalidEmojis", "validNonShortcutEmojis"].every(k => k in sent[0].data));
+    check("contenu au format protocole", /^\u{1F50A} SONAR\|1\|<@\d+>\|klaxon\|[0-9a-f]{8}\|hop$/u.test(sent[0]?.data.content ?? ""));
+    check("accuse de reception local", r?.content?.includes("✅"));
+
+    console.log("-- Panneau de reglages --");
+    const panel = plugin.getSettingsPanel();
+    check("panneau construit", panel?.__panel === true);
+    const cats = panel.settings.filter(s => s.type === "category").map(s => s.id);
+    check("categories attendues", JSON.stringify(cats) === JSON.stringify(["general", "sounds", "visual", "guards"]), `(${cats})`);
+    const soundsCat = panel.settings.find(s => s.id === "sounds");
+    check("un reglage file par son", soundsCat.settings.filter(s => s.type === "file").length === 10);
+
+    panel.onChange("sounds", "volume", 0.5);
+    check("onChange ecrit le reglage", plugin.settings.volume === 0.5);
+
+    // Regression : BetterDiscord rend les reglages "button" via son composant Button,
+    // qui ignore onChange et n'ecoute que onClick. Un bouton sans onClick est mort.
+    const allSettings = panel.settings.flatMap(s => s.type === "category" ? s.settings : [s]);
+    const buttons = allSettings.filter(s => s.type === "button");
+    check("des boutons sont declares", buttons.length === 13, `(${buttons.length})`);
+    check("tout bouton a un onClick", buttons.every(b => typeof b.onClick === "function"),
+          `(sans onClick: ${buttons.filter(b => typeof b.onClick !== "function").map(b => b.id).join(", ")})`);
+
+    buttons.find(b => b.id === "importFriends").onClick();
+    check("bouton Importer alimente l'allowlist", plugin.settings.allowlist.includes(FRIEND));
+
+    buttons.find(b => b.id === "diag").onClick();
+    check("bouton Diagnostic produit un rapport", alerts.length === 1 && alerts[0].body.includes("Dispatcher"));
+
+    played.length = 0;
+    buttons.find(b => b.id === "test_alarme").onClick();
+    check("bouton Ecouter joue le son", played.length === 1);
+    buttons.find(b => b.id === "test_klaxon").onClick();
+    check("Ecouter sans fichier ne joue rien", played.length === 1);
+    check("Ecouter sans fichier avertit", toasts.at(-1)?.msg.includes("aucun fichier"), `(${toasts.at(-1)?.msg})`);
+
+    // Simulation : le cooldown de FRIEND/global est encore actif ici, elle doit passer quand meme.
+    panel.onChange("general", "simSound", "alarme");
+    check("choix du son a simuler enregistre", plugin.settings.simSound === "alarme");
+    played.length = 0;
+    const notifBefore = notifications.length;
+    const statsBefore = JSON.stringify(plugin.settings.stats);
+    buttons.find(b => b.id === "simulate").onClick();
+    buttons.find(b => b.id === "simulate").onClick();
+    check("Simuler joue le son malgre les cooldowns", played.length === 2, `(${played.length})`);
+    check("Simuler emet l'alerte visuelle", notifications.length === notifBefore + 2);
+    check("Simuler ne touche pas aux stats", JSON.stringify(plugin.settings.stats) === statsBefore);
+    check("Simuler n'envoie rien", sent.length === 1, `(${sent.length})`);
+    panel.onChange("general", "simSound", "klaxon");
+    buttons.find(b => b.id === "simulate").onClick();
+    check("Simuler sans fichier avertit", played.length === 2 && toasts.at(-1)?.msg.includes("aucun fichier"));
+
+    // Le composant file renvoie une string quand `multiple` n'est pas vrai.
+    const soundsCatSettings = panel.settings.find(s => s.id === "sounds").settings;
+    check("note du fichier affiche le nom choisi",
+          soundsCatSettings.find(s => s.id === "file_alarme").note.includes("sonar-test.wav"));
+    panel.onChange("sounds", "file_klaxon", soundFile);
+    check("choix d'un fichier enregistre le chemin", plugin.settings.sounds.klaxon === soundFile);
+    check("choix d'un fichier donne un retour", toasts.at(-1)?.msg.includes("sonar-test.wav"));
+    panel.onChange("sounds", "file_klaxon", "");
+    check("effacement du fichier pris en compte", plugin.settings.sounds.klaxon === "");
+
+    check("aucun enableWith dans une categorie (bug BD 1.14.1)",
+          allSettings.every(s => !("enableWith" in s)));
+
+    console.log("-- Arret --");
+    plugin.stop();
+    check("desabonne de MESSAGE_CREATE", (subs.MESSAGE_CREATE?.size ?? 0) === 0);
+    check("desabonne de CONNECTION_OPEN", (subs.CONNECTION_OPEN?.size ?? 0) === 0);
+    check("commandes desenregistrees", registeredCommands.length === 0);
+    check("menus depatches", patchedMenus.length === 0);
+    check("reglages persistes sur disque", !!saved.settings && saved.settings.channelId === CHANNEL);
+
+    try { fs.unlinkSync(soundFile); } catch {}
+    console.log(`\n${pass} reussis, ${fail} echoues`);
+    process.exit(fail ? 1 : 0);
+});

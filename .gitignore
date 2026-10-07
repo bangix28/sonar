@@ -1,0 +1,9 @@
+# IDE
+.idea/
+
+# Système
+Thumbs.db
+desktop.ini
+
+# Archives de distribution
+*.zip
