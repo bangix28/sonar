@@ -2,7 +2,7 @@
  * @name Sonar
  * @author kenol
  * @description Envoie une notification sonore ciblée à un ami, insensible à la sourdine et au Ne pas déranger.
- * @version 0.3.0
+ * @version 0.3.1
  * @source https://github.com/bangix28/sonar
  * @updateUrl https://raw.githubusercontent.com/bangix28/sonar/main/Sonar.plugin.js
  */
@@ -62,6 +62,18 @@ const MIME_BY_EXT = {
 /** Nom de fichier seul, sans dépendre du polyfill `path`. */
 function basename(filePath) {
     return String(filePath ?? "").split(/[\\/]/).pop() || "";
+}
+
+/**
+ * Ajoute des entrées à un menu contextuel. `props.children` est le plus souvent un
+ * tableau, mais Discord le rend parfois en élément unique : un push nu y lève une
+ * exception que BetterDiscord avale, et l'entrée disparaît sans bruit.
+ */
+function appendToMenu(returnValue, ...items) {
+    const props = returnValue?.props;
+    if (!props) return;
+    if (Array.isArray(props.children)) props.children.push(...items);
+    else props.children = [props.children, ...items].filter(Boolean);
 }
 
 /** Buffer WAV silencieux, sert à « armer » le contexte audio après un refus d'autoplay. */
@@ -1222,11 +1234,10 @@ module.exports = class Sonar {
         this.#unpatchMenus.push(BdApi.ContextMenu.patch("user-context", (returnValue, props) => {
             const user = props?.user;
             if (!user || user.bot || user.id === Modules.currentUserId) return;
-            if (!this.settings.channelId) return;
 
-            returnValue.props.children.push(
-                BdApi.ContextMenu.buildItem({type: "separator"}),
-                BdApi.ContextMenu.buildItem({
+            // Toujours visible : une entrée qui disparaît sans salon configuré passe pour un bug.
+            const item = this.settings.channelId
+                ? {
                     type: "submenu",
                     id: "sonar-send",
                     label: "Envoyer un Sonar",
@@ -1235,7 +1246,20 @@ module.exports = class Sonar {
                         label: sound.label,
                         action: () => this.#send(user.id, sound.id, "")
                     }))
-                })
+                }
+                : {
+                    type: "item",
+                    id: "sonar-send",
+                    label: "Envoyer un Sonar (salon à configurer)",
+                    action: () => BdApi.UI.showToast(
+                        "Sonar : clic droit sur un salon → « Définir comme salon Sonar » d'abord.",
+                        {type: "warning"}
+                    )
+                };
+
+            appendToMenu(returnValue,
+                BdApi.ContextMenu.buildItem({type: "separator"}),
+                BdApi.ContextMenu.buildItem(item)
             );
         }));
 
@@ -1243,7 +1267,7 @@ module.exports = class Sonar {
             const channel = props?.channel;
             if (!channel?.id) return;
 
-            returnValue.props.children.push(
+            appendToMenu(returnValue,
                 BdApi.ContextMenu.buildItem({type: "separator"}),
                 BdApi.ContextMenu.buildItem({
                     type: "item",

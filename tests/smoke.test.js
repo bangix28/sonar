@@ -176,10 +176,27 @@ plugin.start(); // idempotence
 check("start() idempotent (pas de double abonnement)", subs.MESSAGE_CREATE.size === 1);
 
 console.log("-- Configuration --");
+const userMenu = patchedMenus.find(p => p.navId === "user-context");
+const openUserMenu = (user, children = []) => {
+    const rv = {props: {children}};
+    userMenu.cb(rv, {user});
+    return rv.props.children;
+};
+check("clic droit sans salon : entree visible et explicite",
+      openUserMenu({id: FRIEND}).some(i => i.type === "item" && i.label.includes("salon à configurer")));
+
 const setChannel = registeredCommands.find(c => c.name === "sonar-ici");
 setChannel.execute([], {});
 check("/sonar-ici definit le salon", plugin.settings.channelId === CHANNEL);
 check("/sonar masquee sans salon devient visible", registeredCommands.find(c => c.name === "sonar").predicate() === true);
+
+const menu = openUserMenu({id: FRIEND});
+const submenu = menu.find(i => i.id === "sonar-send");
+check("clic droit sur un ami : sous-menu Envoyer un Sonar",
+      submenu?.type === "submenu" && submenu.items.length === 10 && submenu.items.every(i => typeof i.action === "function"));
+check("clic droit : menu en element unique gere", openUserMenu({id: FRIEND}, {type: "group"}).length === 3);
+check("clic droit sur soi-meme : rien", openUserMenu({id: ME}).length === 0);
+check("clic droit sur un bot : rien", openUserMenu({id: FRIEND, bot: true}).length === 0);
 
 // Fichier son reel pour exercer SoundBank
 const soundFile = path.join(os.tmpdir(), "sonar-test.wav");

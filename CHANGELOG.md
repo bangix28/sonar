@@ -2,6 +2,14 @@
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.3.1] — 2026-10-07
+
+### Corrigé
+- **Clic droit → « Envoyer un Sonar » plus fiable.** L'entrée était masquée sans salon configuré, et
+  un `push` sur `props.children` levait une exception (avalée par BetterDiscord) quand Discord rend
+  le menu en élément unique. L'entrée est désormais toujours visible — sans salon, elle explique
+  quoi faire — et l'ajout gère les deux formes de menu.
+
 ## [0.3.0] — 2026-10-07
 
 ### Ajouté
