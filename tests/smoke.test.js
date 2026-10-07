@@ -202,6 +202,9 @@ check("clic droit sur soi-meme : rien", openUserMenu({id: ME}).length === 0);
 check("clic droit sur un bot : rien", openUserMenu({id: FRIEND, bot: true}).length === 0);
 check("menu avec seulement userId (ex. salon vocal)",
       openUserMenu(undefined, [], {userId: FRIEND}).some(i => i.id === "sonar-send"));
+check("menu avec l'utilisateur sous une autre cle (participant vocal)",
+      openUserMenu(undefined, [], {participant: {user: {id: FRIEND, username: "Alice"}}}).some(i => i.id === "sonar-send"));
+check("menu sans utilisateur : rien", openUserMenu(undefined, [], {channel: {id: CHANNEL}}).length === 0);
 const nested = openUserMenu({id: FRIEND});
 check("menus imbriques : une seule entree", openUserMenu({id: FRIEND}, nested).length === nested.length);
 

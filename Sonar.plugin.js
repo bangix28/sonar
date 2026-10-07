@@ -2,7 +2,7 @@
  * @name Sonar
  * @author kenol
  * @description Envoie une notification sonore ciblée à un ami, insensible à la sourdine et au Ne pas déranger.
- * @version 0.3.3
+ * @version 0.3.4
  * @source https://github.com/bangix28/sonar
  * @updateUrl https://raw.githubusercontent.com/bangix28/sonar/main/Sonar.plugin.js
  */
@@ -74,6 +74,29 @@ function appendToMenu(returnValue, ...items) {
     if (!props) return;
     if (Array.isArray(props.children)) props.children.push(...items);
     else props.children = [props.children, ...items].filter(Boolean);
+}
+
+/**
+ * L'utilisateur visé par un menu contextuel. Les props reçus sont ceux du composant
+ * qui rend le menu, et leur forme varie selon l'endroit (liste des membres, salon
+ * vocal, profil…) : `user`, `userId`, ou un objet utilisateur sous un autre nom.
+ */
+function findMenuUser(props, returnValue) {
+    const isUser = (u) => u && typeof u === "object" && /^\d{15,25}$/.test(String(u.id)) && "username" in u;
+    const byId = (id) => (/^\d{15,25}$/.test(String(id)) ? Modules.userStore?.getUser?.(id) ?? null : null);
+
+    for (const source of [props, returnValue?.props]) {
+        if (!source) continue;
+        if (/^\d{15,25}$/.test(String(source.user?.id))) return source.user;
+        const fromId = byId(source.userId);
+        if (fromId) return fromId;
+    }
+    // Dernier recours : un objet utilisateur sous une autre clé (ex. participant vocal).
+    for (const value of Object.values(props ?? {})) {
+        if (isUser(value)) return value;
+        if (isUser(value?.user)) return value.user;
+    }
+    return null;
 }
 
 /** Vrai si une entrée d'id `id` est déjà dans le menu (recherche bornée en profondeur). */
@@ -1247,8 +1270,13 @@ module.exports = class Sonar {
         // Motif plutôt que "user-context" seul : le menu d'un participant de salon vocal,
         // du profil, etc. portent d'autres navId selon l'endroit et les versions de Discord.
         this.#unpatchMenus.push(BdApi.ContextMenu.patch(/user/i, (returnValue, props) => {
-            const user = props?.user ?? (props?.userId ? Modules.userStore?.getUser?.(props.userId) : null);
-            if (!user?.id || user.bot || user.id === Modules.currentUserId) return;
+            const user = findMenuUser(props, returnValue);
+            if (!user?.id) {
+                // Indice pour le débogage : quels props ce menu fournit-il vraiment ?
+                BdApi.Logger.info("Sonar", `Menu ${returnValue?.props?.navId} sans utilisateur, props : ${Object.keys(props ?? {}).join(", ")}`);
+                return;
+            }
+            if (user.bot || user.id === Modules.currentUserId) return;
             if (menuHas(returnValue, "sonar-send")) return; // menus imbriqués : une seule entrée
 
             // Toujours visible : une entrée qui disparaît sans salon configuré passe pour un bug.

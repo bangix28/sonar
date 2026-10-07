@@ -2,6 +2,14 @@
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.3.4] — 2026-10-07
+
+### Corrigé
+- **« Envoyer un Sonar » absent du clic droit sur un participant de salon vocal.** Les props reçus
+  par le patch sont ceux du composant qui rend le menu, pas forcément `{user}`. `findMenuUser`
+  cherche `user`, `userId`, les props du menu, puis un objet utilisateur sous une autre clé. Un menu
+  sans utilisateur reconnu journalise ses clés de props (console, niveau info) pour le débogage.
+
 ## [0.3.3] — 2026-10-07
 
 ### Corrigé
