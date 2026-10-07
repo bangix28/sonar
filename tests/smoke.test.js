@@ -136,8 +136,9 @@ const response = (body) => ({
     arrayBuffer: async () => new TextEncoder().encode(body).buffer
 });
 BdApi.Net = {
-    fetch: async (url) => {
+    fetch: async (url, opts) => {
         remote.fetched.push(url);
+        (remote.headers ??= {})[url] = opts?.headers ?? {};
         if (url.includes("Sonar.plugin.js")) return response(remotePlugin());
         if (url.includes("/contents/sounds")) return response(JSON.stringify([
             {type: "file", name: "meurs.ogg", size: 4, download_url: "https://x/meurs.ogg"},
@@ -338,7 +339,11 @@ Promise.resolve(res).then(async (r) => {
     check("bouton Verifier installe la version distante",
           fs.existsSync(installed) && fs.readFileSync(installed, "utf8").includes("@version 9.9.9"));
     check("toast de mise a jour", toasts.some(t => t.msg.includes("mis à jour en 9.9.9")));
-    check("cache GitHub contourne", remote.fetched.some(u => /Sonar\.plugin\.js\?t=\d+/.test(u)));
+    // Le CDN raw.githubusercontent.com sert l'ancienne version plusieurs minutes : passer par l'API.
+    const pluginUrl = remote.fetched.find(u => u.includes("Sonar.plugin.js"));
+    check("plugin lu via l'API GitHub (pas le CDN raw)",
+          pluginUrl?.startsWith("https://api.github.com/") && remote.headers[pluginUrl]?.Accept === "application/vnd.github.raw",
+          `(${pluginUrl})`);
 
     remote.version = "0.1.0";
     await plugin.updater.checkPlugin({manual: true});

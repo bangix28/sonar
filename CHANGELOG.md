@@ -2,6 +2,13 @@
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.3.3] — 2026-10-07
+
+### Corrigé
+- **Mise à jour en retard après un push.** Le CDN `raw.githubusercontent.com` ignore la query string
+  anti-cache et sert l'ancienne version plusieurs minutes. Le plugin est désormais lu via l'API GitHub
+  (`Accept: application/vnd.github.raw`), à jour dès le push.
+
 ## [0.3.2] — 2026-10-07
 
 ### Ajouté

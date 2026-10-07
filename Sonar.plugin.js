@@ -2,7 +2,7 @@
  * @name Sonar
  * @author kenol
  * @description Envoie une notification sonore ciblée à un ami, insensible à la sourdine et au Ne pas déranger.
- * @version 0.3.2
+ * @version 0.3.3
  * @source https://github.com/bangix28/sonar
  * @updateUrl https://raw.githubusercontent.com/bangix28/sonar/main/Sonar.plugin.js
  */
@@ -41,7 +41,7 @@ const SOUND_CATALOG = [
 ];
 
 const REPO = "bangix28/sonar";
-const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/main/`;
+const API_BASE = `https://api.github.com/repos/${REPO}/`;
 const UPDATE_CHECK_DELAY_MS = 15_000;
 const UPDATE_INTERVAL_MS = 6 * 3600_000;
 
@@ -920,8 +920,8 @@ class Updater {
         return this.#fs && this.#path;
     }
 
-    async #fetch(url) {
-        const res = await BdApi.Net.fetch(url, {headers: {"User-Agent": "Sonar-BetterDiscord"}, timeout: 15_000});
+    async #fetch(url, headers = {}) {
+        const res = await BdApi.Net.fetch(url, {headers: {"User-Agent": "Sonar-BetterDiscord", ...headers}, timeout: 15_000});
         if (!res?.ok) throw new Error(`HTTP ${res?.status} sur ${url}`);
         return res;
     }
@@ -934,7 +934,12 @@ class Updater {
 
     async checkPlugin({manual = false} = {}) {
         try {
-            const text = await (await this.#fetch(`${RAW_BASE}Sonar.plugin.js?t=${Date.now()}`)).text();
+            // API plutôt que raw.githubusercontent.com : le CDN raw ignore la query string
+            // et sert l'ancienne version plusieurs minutes après un push.
+            const text = await (await this.#fetch(
+                `${API_BASE}contents/Sonar.plugin.js?ref=main`,
+                {Accept: "application/vnd.github.raw"}
+            )).text();
 
             const valid = text.startsWith("/**") && /@name\s+Sonar\b/.test(text)
                 && text.includes("module.exports") && text.length > 10_000 && text.length < 1_000_000;
@@ -990,7 +995,7 @@ class Updater {
     async syncSounds({manual = false} = {}) {
         if (!this.#node()) return;
         try {
-            const listing = await (await this.#fetch(`https://api.github.com/repos/${REPO}/contents/sounds`)).json();
+            const listing = await (await this.#fetch(`${API_BASE}contents/sounds?ref=main`)).json();
             const ids = new Set(SOUND_CATALOG.map((s) => s.id));
             const dir = this.#path.join(BdApi.Plugins.folder, DEFAULT_SOUNDS_DIRS.at(1));
 
