@@ -2,6 +2,26 @@
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.3.9] — 2026-10-07
+
+Regroupe 0.3.6 à 0.3.8, testées en local seulement.
+
+### Corrigé
+- **Le clic sur « Envoyer un Sonar › » (repli DOM) ne faisait rien.** Discord ferme le menu au
+  `pointerdown` sur tout élément qui n'est pas un de ses items React : nos entrées clonées étaient
+  « dehors » et le `click` ne partait jamais. L'action est déclenchée au `pointerdown`, intercepté en
+  capture sur `window`, et la séquence souris est avalée.
+- **Le repli DOM s'injectait dans le sous-menu des sons** (`#user-context-sonar-send`, lui aussi un
+  `[role=menu]` dont l'id contient « user »). Exclu par sélecteur.
+- **Fermeture du menu avant l'envoi** : si `ContextMenu.close()` levait, le Sonar ne partait pas.
+  L'envoi passe en premier ; la fermeture est protégée.
+- **Salon Sonar défini sur un salon vocal → 403 « Permissions manquantes » (50013).** « Définir comme
+  salon Sonar » et `/sonar-ici` n'acceptent plus que les salons texte, MP, groupes et annonces ; le
+  Diagnostic et l'envoi signalent clairement un salon non texte.
+
+### Ajouté
+- Toast « Sonar « … » envoyé. » après un envoi depuis un menu contextuel.
+
 ## [0.3.5] — 2026-10-07
 
 ### Corrigé

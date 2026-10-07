@@ -53,6 +53,7 @@ globalThis.window = {
 const ME = "111111111111111111";
 const FRIEND = "287654321098765432";
 const CHANNEL = "999999999999999999";
+const VOICE = "888888888888888888";
 
 const subs = {};
 const dispatcher = {
@@ -71,7 +72,7 @@ const messageActions = {
 
 const stores = {
     UserStore: {getCurrentUser: () => ({id: ME, username: "kenol"}), getUser: (id) => ({id}), _dispatcher: dispatcher},
-    ChannelStore: {getChannel: (id) => (id === CHANNEL ? {id, name: "sonar"} : null)},
+    ChannelStore: {getChannel: (id) => (id === CHANNEL ? {id, name: "sonar", type: 0} : id === VOICE ? {id, name: "vocal", type: 2} : null)},
     MessageStore: {getMessages: () => ({toArray: () => []})},
     SelectedChannelStore: {getChannelId: () => CHANNEL},
     RelationshipStore: {getFriendIDs: () => [FRIEND]},
@@ -188,7 +189,15 @@ const openUserMenu = (user, children = [], extra = {}) => {
 check("clic droit sans salon : entree visible et explicite",
       openUserMenu({id: FRIEND}).some(i => i.type === "item" && i.label.includes("salon à configurer")));
 
+// Salon vocal : refuse partout (Discord renvoie 403 / 50013 a l'envoi).
+const channelMenu = patchedMenus.find(p => p.navId === "channel-context");
+const openChannelMenu = (channel) => { const rv = {props: {children: []}}; channelMenu.cb(rv, {channel}); return rv.props.children; };
+check("clic droit sur un salon vocal : pas de « Definir comme salon Sonar »", openChannelMenu({id: VOICE, name: "vocal", type: 2}).length === 0);
+check("clic droit sur un salon texte : entree presente", openChannelMenu({id: CHANNEL, name: "sonar", type: 0}).some(i => i.id === "sonar-set-channel"));
+stores.SelectedChannelStore.getChannelId = () => VOICE;
 const setChannel = registeredCommands.find(c => c.name === "sonar-ici");
+check("/sonar-ici refuse un salon vocal", setChannel.execute([], {}).content.includes("❌") && !plugin.settings.channelId);
+stores.SelectedChannelStore.getChannelId = () => CHANNEL;
 setChannel.execute([], {});
 check("/sonar-ici definit le salon", plugin.settings.channelId === CHANNEL);
 check("/sonar masquee sans salon devient visible", registeredCommands.find(c => c.name === "sonar").predicate() === true);
@@ -205,6 +214,23 @@ check("menu avec seulement userId (ex. salon vocal)",
 check("menu avec l'utilisateur sous une autre cle (participant vocal)",
       openUserMenu(undefined, [], {participant: {user: {id: FRIEND, username: "Alice"}}}).some(i => i.id === "sonar-send"));
 check("menu sans utilisateur : rien", openUserMenu(undefined, [], {channel: {id: CHANNEL}}).length === 0);
+// Repli DOM : l'action part au pointerdown et toute la sequence est avalee.
+{
+    let fired = 0, stopped = 0;
+    const item = {sonarAction: () => { fired++; }};
+    const ev = (type, button = 0, target = {closest: () => item}) => ({
+        type, button, target,
+        preventDefault() {}, stopPropagation() { stopped++; }, stopImmediatePropagation() {}
+    });
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) plugin.menuInjector.handlePointer(ev(type));
+    check("menu DOM : action declenchee une seule fois, au pointerdown", fired === 1, `(${fired})`);
+    check("menu DOM : sequence souris avalee (Discord ne ferme pas le menu)", stopped === 5);
+    plugin.menuInjector.handlePointer(ev("pointerdown", 2));
+    check("menu DOM : clic droit ignore", fired === 1);
+    const before = stopped;
+    plugin.menuInjector.handlePointer(ev("pointerdown", 0, {closest: () => null}));
+    check("menu DOM : clics ailleurs non interceptes", fired === 1 && stopped === before);
+}
 const nested = openUserMenu({id: FRIEND});
 check("menus imbriques : une seule entree", openUserMenu({id: FRIEND}, nested).length === nested.length);
 

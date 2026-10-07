@@ -2,7 +2,7 @@
  * @name Sonar
  * @author kenol
  * @description Envoie une notification sonore ciblée à un ami, insensible à la sourdine et au Ne pas déranger.
- * @version 0.3.5
+ * @version 0.3.9
  * @source https://github.com/bangix28/sonar
  * @updateUrl https://raw.githubusercontent.com/bangix28/sonar/main/Sonar.plugin.js
  */
@@ -97,6 +97,16 @@ function findMenuUser(props, returnValue) {
         if (isUser(value?.user)) return value.user;
     }
     return null;
+}
+
+/**
+ * Salons où un message texte passe : texte (0), MP (1), groupe (3), annonces (5).
+ * Exclus : vocal (2), catégorie (4), stage (13), forum (15)… qui renvoient 403.
+ */
+const TEXT_CHANNEL_TYPES = new Set([0, 1, 3, 5]);
+
+function isTextChannel(channel) {
+    return TEXT_CHANNEL_TYPES.has(Number(channel?.type));
 }
 
 /** Vrai si une entrée d'id `id` est déjà dans le menu (recherche bornée en profondeur). */
@@ -868,6 +878,11 @@ class Sender {
             BdApi.UI.showToast("Sonar : destinataire invalide.", {type: "error"});
             return false;
         }
+        const channel = Modules.channelStore?.getChannel?.(s.channelId);
+        if (channel && !isTextChannel(channel)) {
+            BdApi.UI.showToast(`Sonar : « ${channel.name} » n'est pas un salon texte. Choisis un salon texte (/sonar-ici).`, {type: "error"});
+            return false;
+        }
         if (targetId === Modules.currentUserId) {
             BdApi.UI.showToast("Sonar : tu ne peux pas te pinger toi-même.", {type: "warning"});
             return false;
@@ -1088,12 +1103,16 @@ const DOM_CSS = `
 [data-sonar-item]:hover * { color: #fff !important; }
 `;
 
+/** Événements souris interceptés sur nos entrées (capture sur window, avant Discord). */
+const DOM_POINTER_EVENTS = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+
 class MenuInjector {
     #observer = null;
 
     constructor({canSend, onSend}) {
         this.canSend = canSend;
         this.onSend = onSend;
+        this.handlePointer = this.handlePointer.bind(this);
     }
 
     start() {
@@ -1101,17 +1120,36 @@ class MenuInjector {
         BdApi.DOM?.addStyle?.(DOM_STYLE_ID, DOM_CSS);
         this.#observer = new MutationObserver(() => this.#scan());
         this.#observer.observe(document.body, {childList: true, subtree: true});
+        for (const type of DOM_POINTER_EVENTS) window.addEventListener(type, this.handlePointer, true);
     }
 
     stop() {
         this.#observer?.disconnect();
         this.#observer = null;
         BdApi.DOM?.removeStyle?.(DOM_STYLE_ID);
+        for (const type of DOM_POINTER_EVENTS) window.removeEventListener(type, this.handlePointer, true);
+    }
+
+    /**
+     * Discord ferme le menu au pointerdown sur tout ce qui n'est pas un de SES items
+     * React : nos clones sont « dehors », le menu disparaît avant que `click` ne
+     * parte. On agit donc au pointerdown, en capture sur window (premier maillon
+     * de la propagation), et on avale toute la séquence pour que Discord ne voie rien.
+     */
+    handlePointer(event) {
+        const item = event.target?.closest?.("[data-sonar-item]");
+        if (!item) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        if (event.type === "pointerdown" && event.button === 0) item.sonarAction?.();
     }
 
     #scan() {
         // Appelé à chaque mutation du DOM : un seul sélecteur, rien d'autre tant qu'aucun menu n'est ouvert.
-        for (const menu of document.querySelectorAll('[role="menu"][id*="user"]:not([data-sonar])')) {
+        // `:not([id*="sonar"])` : le sous-menu des sons (#user-context-sonar-send) est aussi un
+        // [role=menu] dont l'id contient « user » — sans ce filtre on s'injectait dedans.
+        for (const menu of document.querySelectorAll('[role="menu"][id*="user"]:not([id*="sonar"]):not([data-sonar])')) {
             // Le patch BdApi.ContextMenu a fonctionné : son entrée a l'id DOM `${navId}-sonar-send`.
             if (menu.querySelector('[id$="-sonar-send"]')) continue;
             menu.dataset.sonar = "1";
@@ -1147,11 +1185,7 @@ class MenuInjector {
                 ?? item;
             labelEl.textContent = label;
             item.sonarLabel = labelEl;
-            item.addEventListener("click", (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onClick();
-            });
+            item.sonarAction = onClick; // déclenché par handlePointer
             return item;
         };
 
@@ -1166,8 +1200,13 @@ class MenuInjector {
             head.sonarLabel.textContent = "Envoyer un Sonar ⌄";
             for (const sound of SOUND_CATALOG) {
                 const item = makeItem(`${DOM_ITEM_ID}-${sound.id}`, `   🔊 ${sound.label}`, () => {
-                    BdApi.ContextMenu?.close?.();
+                    // Envoi d'abord : si la fermeture du menu lève, le Sonar part quand même.
                     this.onSend(userId, sound.id);
+                    try {
+                        BdApi.ContextMenu?.close?.();
+                    } catch (err) {
+                        BdApi.Logger.warn("Sonar", `Fermeture du menu échouée : ${err?.message ?? err}`);
+                    }
                 });
                 item.dataset.sonarSound = sound.id;
                 group.appendChild(item);
@@ -1212,7 +1251,7 @@ module.exports = class Sonar {
         });
         this.menuInjector = new MenuInjector({
             canSend: () => !!this.settings.channelId,
-            onSend: (userId, soundId) => this.#send(userId, soundId, "")
+            onSend: (userId, soundId) => this.#sendFromMenu(userId, soundId)
         });
     }
 
@@ -1343,6 +1382,20 @@ module.exports = class Sonar {
         return ok;
     }
 
+    /** Depuis un menu, rien d'autre ne confirme l'envoi : un toast le fait (les échecs ont déjà le leur). */
+    async #sendFromMenu(userId, soundId) {
+        try {
+            const ok = await this.#send(userId, soundId, "");
+            if (ok) {
+                const label = SOUND_CATALOG.find((s) => s.id === soundId)?.label ?? soundId;
+                BdApi.UI.showToast(`Sonar « ${label} » envoyé.`, {type: "success"});
+            }
+        } catch (err) {
+            BdApi.Logger.stacktrace("Sonar", "Envoi depuis le menu échoué", err);
+            BdApi.UI.showToast("Sonar : envoi échoué.", {type: "error"});
+        }
+    }
+
     #registerCommands() {
         const Types = BdApi.Commands?.Types?.OptionTypes;
         if (!Types) return;
@@ -1384,6 +1437,10 @@ module.exports = class Sonar {
             execute: () => {
                 const channelId = Modules.selectedChannelStore?.getChannelId?.();
                 if (!channelId) return {content: "❌ Salon courant introuvable."};
+                const channel = Modules.channelStore?.getChannel?.(channelId);
+                if (channel && !isTextChannel(channel)) {
+                    return {content: "❌ Ce salon n'est pas un salon texte. Lance /sonar-ici depuis un salon texte."};
+                }
                 this.store.set("channelId", channelId);
                 return {content: `✅ Salon Sonar défini sur <#${channelId}>.`};
             }
@@ -1414,7 +1471,7 @@ module.exports = class Sonar {
                     items: SOUND_CATALOG.map((sound) => ({
                         id: `sonar-send-${sound.id}`,
                         label: sound.label,
-                        action: () => this.#send(user.id, sound.id, "")
+                        action: () => this.#sendFromMenu(user.id, sound.id)
                     }))
                 }
                 : {
@@ -1435,7 +1492,8 @@ module.exports = class Sonar {
 
         this.#unpatchMenus.push(BdApi.ContextMenu.patch("channel-context", (returnValue, props) => {
             const channel = props?.channel;
-            if (!channel?.id) return;
+            // Vocal, catégorie, forum… : Discord y refuse l'envoi (403, code 50013).
+            if (!channel?.id || !isTextChannel(channel)) return;
 
             appendToMenu(returnValue,
                 BdApi.ContextMenu.buildItem({type: "separator"}),
@@ -1465,9 +1523,11 @@ module.exports = class Sonar {
             lines.push("❌  Aucun salon Sonar configuré");
         } else {
             const channel = Modules.channelStore?.getChannel?.(s.channelId);
-            lines.push(channel
-                ? `✅  Salon : #${channel.name ?? s.channelId}`
-                : `❌  Salon ${s.channelId} introuvable ou inaccessible`);
+            lines.push(!channel
+                ? `❌  Salon ${s.channelId} introuvable ou inaccessible`
+                : isTextChannel(channel)
+                    ? `✅  Salon : #${channel.name ?? s.channelId}`
+                    : `❌  Salon « ${channel.name} » : pas un salon texte, l'envoi sera refusé. Choisis un salon texte.`);
         }
 
         const mapped = SOUND_CATALOG.filter((sound) => this.bank.exists(this.#soundPath(sound.id)));
