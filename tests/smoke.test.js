@@ -53,7 +53,7 @@ globalThis.window = {
 const ME = "111111111111111111";
 const FRIEND = "287654321098765432";
 const CHANNEL = "999999999999999999";
-const VOICE = "888888888888888888";
+const CATEGORY = "888888888888888888";
 
 const subs = {};
 const dispatcher = {
@@ -63,16 +63,17 @@ const dispatcher = {
     emit(ev, payload) { for (const fn of subs[ev] ?? []) fn(payload); }
 };
 
-const sent = [];
+const sent = [], deleted = [];
 const messageActions = {
     editMessage() {},
-    sendMessage(channelId, data, wait, options) { sent.push({channelId, data, options}); return Promise.resolve(); },
+    sendMessage(channelId, data, wait, options) { sent.push({channelId, data, options}); return Promise.resolve({body: {id: `msg${sent.length}`}}); },
+    deleteMessage(channelId, messageId) { deleted.push({channelId, messageId}); return Promise.resolve(); },
     fetchMessages() { return Promise.resolve(); }
 };
 
 const stores = {
     UserStore: {getCurrentUser: () => ({id: ME, username: "kenol"}), getUser: (id) => ({id}), _dispatcher: dispatcher},
-    ChannelStore: {getChannel: (id) => (id === CHANNEL ? {id, name: "sonar", type: 0} : id === VOICE ? {id, name: "vocal", type: 2} : null)},
+    ChannelStore: {getChannel: (id) => (id === CHANNEL ? {id, name: "sonar", type: 0} : id === CATEGORY ? {id, name: "categorie", type: 4} : null)},
     MessageStore: {getMessages: () => ({toArray: () => []})},
     SelectedChannelStore: {getChannelId: () => CHANNEL},
     RelationshipStore: {getFriendIDs: () => [FRIEND]},
@@ -189,14 +190,15 @@ const openUserMenu = (user, children = [], extra = {}) => {
 check("clic droit sans salon : entree visible et explicite",
       openUserMenu({id: FRIEND}).some(i => i.type === "item" && i.label.includes("salon à configurer")));
 
-// Salon vocal : refuse partout (Discord renvoie 403 / 50013 a l'envoi).
+// Categorie : aucun message possible, refusee partout. Un salon vocal (chat integre) reste accepte.
 const channelMenu = patchedMenus.find(p => p.navId === "channel-context");
 const openChannelMenu = (channel) => { const rv = {props: {children: []}}; channelMenu.cb(rv, {channel}); return rv.props.children; };
-check("clic droit sur un salon vocal : pas de « Definir comme salon Sonar »", openChannelMenu({id: VOICE, name: "vocal", type: 2}).length === 0);
+check("clic droit sur une categorie : pas de « Definir comme salon Sonar »", openChannelMenu({id: CATEGORY, name: "categorie", type: 4}).length === 0);
+check("clic droit sur un salon vocal (chat integre) : entree presente", openChannelMenu({id: "777777777777777777", name: "vocal", type: 2}).some(i => i.id === "sonar-set-channel"));
 check("clic droit sur un salon texte : entree presente", openChannelMenu({id: CHANNEL, name: "sonar", type: 0}).some(i => i.id === "sonar-set-channel"));
-stores.SelectedChannelStore.getChannelId = () => VOICE;
+stores.SelectedChannelStore.getChannelId = () => CATEGORY;
 const setChannel = registeredCommands.find(c => c.name === "sonar-ici");
-check("/sonar-ici refuse un salon vocal", setChannel.execute([], {}).content.includes("❌") && !plugin.settings.channelId);
+check("/sonar-ici refuse une categorie", setChannel.execute([], {}).content.includes("❌") && !plugin.settings.channelId);
 stores.SelectedChannelStore.getChannelId = () => CHANNEL;
 setChannel.execute([], {});
 check("/sonar-ici definit le salon", plugin.settings.channelId === CHANNEL);
@@ -300,6 +302,13 @@ Promise.resolve(res).then(async (r) => {
     check("4 champs requis presents", sent[0] && ["content", "tts", "invalidEmojis", "validNonShortcutEmojis"].every(k => k in sent[0].data));
     check("contenu au format protocole", /^\u{1F50A} SONAR\|1\|<@\d+>\|klaxon\|[0-9a-f]{8}\|hop$/u.test(sent[0]?.data.content ?? ""));
     check("accuse de reception local", r?.content?.includes("✅"));
+
+    check("suppression auto : rien avant le delai", deleted.length === 0);
+    plugin.sender.flushDeletes(); // arret / rechargement : on supprime tout de suite
+    check("suppression auto : le signal envoye est supprime",
+          deleted.length === 1 && deleted[0].channelId === CHANNEL && deleted[0].messageId === "msg1", JSON.stringify(deleted));
+    plugin.sender.flushDeletes();
+    check("suppression auto : une seule fois", deleted.length === 1);
 
     console.log("-- Panneau de reglages --");
     const panel = plugin.getSettingsPanel();

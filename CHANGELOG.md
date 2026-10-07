@@ -2,6 +2,21 @@
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/).
 
+## [0.4.0] — 2026-10-07
+
+### Ajouté
+- **Suppression automatique des Sonars envoyés** (activée par défaut, délai réglable de 5 à 60 s,
+  10 s par défaut) pour garder le salon propre. Les destinataires connectés reçoivent le signal en
+  direct ; seul le rattrapage après coupure réseau est perdu. À l'arrêt ou au rechargement du plugin,
+  les suppressions en attente sont exécutées immédiatement.
+- Un refus d'écriture de Discord (403 / 50013) affiche « pas le droit d'écrire dans « … » » au lieu
+  de « envoi échoué ».
+
+### Corrigé
+- **`/sonar-ici` refusait des salons valides** depuis 0.3.9 (fils, chat d'un salon vocal…) : la liste
+  blanche de types est remplacée par une liste d'exclusion des seuls salons sans messages (catégorie,
+  annuaire, forum, média).
+
 ## [0.3.9] — 2026-10-07
 
 Regroupe 0.3.6 à 0.3.8, testées en local seulement.

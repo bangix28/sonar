@@ -2,7 +2,7 @@
  * @name Sonar
  * @author kenol
  * @description Envoie une notification sonore ciblée à un ami, insensible à la sourdine et au Ne pas déranger.
- * @version 0.3.9
+ * @version 0.4.0
  * @source https://github.com/bangix28/sonar
  * @updateUrl https://raw.githubusercontent.com/bangix28/sonar/main/Sonar.plugin.js
  */
@@ -25,6 +25,7 @@ const DEDUPE_WINDOW_MS = 120_000;
 const REPLAY_MAX_AGE_MS = 300_000;
 const SAVE_DEBOUNCE_MS = 300;
 const MAX_CONCURRENT_SOUNDS = 3;
+const AUTO_DELETE_MIN_S = 5; // laisse le temps aux destinataires de recevoir le signal
 const COOLDOWN_FLOOR_S = 5; // plancher non désactivable, cf. garde-fous produit
 
 const SOUND_CATALOG = [
@@ -100,13 +101,15 @@ function findMenuUser(props, returnValue) {
 }
 
 /**
- * Salons où un message texte passe : texte (0), MP (1), groupe (3), annonces (5).
- * Exclus : vocal (2), catégorie (4), stage (13), forum (15)… qui renvoient 403.
+ * Types de salon qui ne contiennent jamais de messages : catégorie (4),
+ * annuaire (14), forum (15), média (16). Liste d'exclusion plutôt que
+ * d'inclusion : le chat d'un salon vocal (2) et les fils (10-12) acceptent
+ * des messages, et une liste blanche les refusait à tort.
  */
-const TEXT_CHANNEL_TYPES = new Set([0, 1, 3, 5]);
+const NO_MESSAGE_CHANNEL_TYPES = new Set([4, 14, 15, 16]);
 
 function isTextChannel(channel) {
-    return TEXT_CHANNEL_TYPES.has(Number(channel?.type));
+    return !NO_MESSAGE_CHANNEL_TYPES.has(Number(channel?.type));
 }
 
 /** Vrai si une entrée d'id `id` est déjà dans le menu (recherche bornée en profondeur). */
@@ -147,6 +150,8 @@ const DEFAULTS = {
     quietEnd: "07:00",
     respectStreamerMode: true,
     replayOnReconnect: true,
+    autoDelete: true,
+    autoDeleteDelay: 10, // secondes
 
     simSound: "ping",  // son choisi pour le bouton « Simuler une réception »
     autoUpdate: true,
@@ -863,6 +868,8 @@ class Receiver {
  * ====================================================================== */
 
 class Sender {
+    #pending = new Map(); // timer -> suppression à exécuter
+
     constructor(settings) {
         this.settings = settings;
     }
@@ -880,7 +887,7 @@ class Sender {
         }
         const channel = Modules.channelStore?.getChannel?.(s.channelId);
         if (channel && !isTextChannel(channel)) {
-            BdApi.UI.showToast(`Sonar : « ${channel.name} » n'est pas un salon texte. Choisis un salon texte (/sonar-ici).`, {type: "error"});
+            BdApi.UI.showToast(`Sonar : « ${channel.name} » ne peut pas contenir de messages (catégorie, forum…). Choisis un autre salon (/sonar-ici).`, {type: "error"});
             return false;
         }
         if (targetId === Modules.currentUserId) {
@@ -898,7 +905,7 @@ class Sender {
         const content = Protocol.encode({targetId, soundId, message});
 
         try {
-            await actions.sendMessage(
+            const result = await actions.sendMessage(
                 s.channelId,
                 // Les 4 champs sont requis : en omettre un fait throw le pipeline émoji.
                 {content, tts: false, invalidEmojis: [], validNonShortcutEmojis: []},
@@ -907,13 +914,55 @@ class Sender {
                     allowedMentions: {parse: s.mentionOnSend ? ["users"] : [], repliedUser: false}
                 }
             );
+            if (s.autoDelete) this.#scheduleDelete(s.channelId, content, result);
             return true;
         } catch (err) {
             BdApi.Logger.stacktrace("Sonar", "sendMessage a échoué", err);
+            if (err?.status === 403 || err?.body?.code === 50013) {
+                // Pas un bug du plugin : Discord refuse l'écriture dans le salon Sonar.
+                const name = Modules.channelStore?.getChannel?.(s.channelId)?.name ?? s.channelId;
+                BdApi.UI.showToast(`Sonar : pas le droit d'écrire dans « ${name} ». Choisis un autre salon (/sonar-ici).`, {type: "error"});
+                return false;
+            }
             Modules.invalidate("messageActions"); // force une re-résolution au prochain envoi
             BdApi.UI.showToast("Sonar : envoi échoué.", {type: "error"});
             return false;
         }
+    }
+
+    /**
+     * Supprime notre signal après un délai, pour garder le salon propre. Les
+     * destinataires connectés l'ont reçu en direct ; seul le rattrapage après
+     * coupure (§8) le perd. Le délai doit donc rester bien au-dessus de la latence.
+     */
+    #scheduleDelete(channelId, content, result) {
+        const delayMs = Math.max(Number(this.settings().autoDeleteDelay) || 0, AUTO_DELETE_MIN_S) * 1000;
+        const run = () => {
+            const actions = Modules.messageActions;
+            // L'id vient de la réponse HTTP ; à défaut, notre dernier message identique dans le store.
+            const messageId = result?.body?.id ?? Modules.messageStore?.getMessages?.(channelId)?.toArray?.()
+                .findLast?.((m) => m.author?.id === Modules.currentUserId && m.content === content)?.id;
+            if (!messageId || typeof actions?.deleteMessage !== "function") {
+                BdApi.Logger.warn("Sonar", "Suppression du signal impossible (id ou module introuvable).");
+                return;
+            }
+            Promise.resolve(actions.deleteMessage(channelId, messageId)).catch((err) =>
+                BdApi.Logger.warn("Sonar", `Suppression du signal échouée : ${err?.message ?? err}`));
+        };
+        const timer = setTimeout(() => {
+            this.#pending.delete(timer);
+            run();
+        }, delayMs);
+        this.#pending.set(timer, run);
+    }
+
+    /** Arrêt du plugin (ou rechargement après mise à jour) : supprimer tout de suite plutôt que de laisser traîner. */
+    flushDeletes() {
+        for (const [timer, run] of this.#pending) {
+            clearTimeout(timer);
+            run();
+        }
+        this.#pending.clear();
     }
 }
 
@@ -1288,6 +1337,7 @@ module.exports = class Sonar {
         clearTimeout(this.#updateTimeout);
         clearInterval(this.#updateInterval);
         this.menuInjector.stop();
+        this.sender.flushDeletes();
 
         this.#abort?.abort();
         this.#abort = null;
@@ -1439,7 +1489,7 @@ module.exports = class Sonar {
                 if (!channelId) return {content: "❌ Salon courant introuvable."};
                 const channel = Modules.channelStore?.getChannel?.(channelId);
                 if (channel && !isTextChannel(channel)) {
-                    return {content: "❌ Ce salon n'est pas un salon texte. Lance /sonar-ici depuis un salon texte."};
+                    return {content: "❌ Ce salon ne peut pas contenir de messages (catégorie, forum…). Lance /sonar-ici depuis un salon où on peut écrire."};
                 }
                 this.store.set("channelId", channelId);
                 return {content: `✅ Salon Sonar défini sur <#${channelId}>.`};
@@ -1492,7 +1542,7 @@ module.exports = class Sonar {
 
         this.#unpatchMenus.push(BdApi.ContextMenu.patch("channel-context", (returnValue, props) => {
             const channel = props?.channel;
-            // Vocal, catégorie, forum… : Discord y refuse l'envoi (403, code 50013).
+            // Catégorie, forum… : aucun message possible.
             if (!channel?.id || !isTextChannel(channel)) return;
 
             appendToMenu(returnValue,
@@ -1527,7 +1577,7 @@ module.exports = class Sonar {
                 ? `❌  Salon ${s.channelId} introuvable ou inaccessible`
                 : isTextChannel(channel)
                     ? `✅  Salon : #${channel.name ?? s.channelId}`
-                    : `❌  Salon « ${channel.name} » : pas un salon texte, l'envoi sera refusé. Choisis un salon texte.`);
+                    : `❌  Salon « ${channel.name} » : ne peut pas contenir de messages. Choisis un autre salon.`);
         }
 
         const mapped = SOUND_CATALOG.filter((sound) => this.bank.exists(this.#soundPath(sound.id)));
@@ -1687,6 +1737,22 @@ module.exports = class Sonar {
                         name: "Rattraper les Sonars manqués",
                         note: "À la reconnexion, rejoue les signaux de moins de 5 minutes. Ne rattrape rien si Discord était fermé.",
                         value: s.replayOnReconnect
+                    },
+                    {
+                        type: "switch",
+                        id: "autoDelete",
+                        name: "Supprimer mes Sonars envoyés",
+                        note: "Garde le salon propre. Les amis connectés reçoivent quand même le Sonar ; seul le rattrapage après une coupure réseau est perdu.",
+                        value: s.autoDelete
+                    },
+                    {
+                        type: "slider",
+                        id: "autoDeleteDelay",
+                        name: "Délai avant suppression (secondes)",
+                        min: AUTO_DELETE_MIN_S, max: 60, step: 5,
+                        value: s.autoDeleteDelay,
+                        markers: [5, 10, 20, 30, 60],
+                        stickToMarkers: true
                     },
                     {
                         type: "button",
